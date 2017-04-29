@@ -1,0 +1,126 @@
+---
+title: "mj_lda_rf"
+author: "Maciej Jankowski"
+date: "20 marca 2017"
+output:
+  pdf_document: default
+  html_document: default
+header-includes:
+   - \usepackage{algorithm,caption}
+   - \usepackage{algorithmic}
+   - \usepackage{bm}
+---
+
+\newcommand{\vect}[1]{\bm{#1}}   
+\newcommand{\matr}[1]{\bm{#1}} 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Celem tego dokumentu jest przetestowanie metody $LDA$ w dwóch wariantach
+\begin{enumerate}
+\item Przy użyciu unigramów
+\item Przy użyciu unigramów i bigramów
+\end{enumerate}
+
+
+```{r data, echo=FALSE, message=FALSE}
+source('C:/work/workspaces/autocoding/data-science/latentDirichletAlocation/lda_ims_utils.R')
+library("topicmodels")
+library("tm")
+library(randomForest)
+library(RWeka)
+
+tree_number=50
+k <- 30
+SEED <- 2100
+
+trainFilePath = 'C:/work/r/data/train_20.csv'
+testFilePath = 'C:/work/r/data/test_20.csv'
+
+#trainFilePath = 'C:/work/r/data/training_data.csv'
+#testFilePath = 'C:/work/r/data/testing_data.csv'
+```
+
+```{r, echo=FALSE}
+imsData <- prepareImsData(trainFile=trainFilePath, testFile=testFilePath)
+
+```
+
+Model LDA zakłada, że ilość tematów $K$, jest z góry ustalona. Dlatego analizaę rozpoczniemy od oszacowania ilości tematów w naszym zbiorze danych. Rozpatrzymy cztery metryki:
+\begin{enumerate}
+\item Griffiths2004
+\item CaoJuan2009
+\item Arun2010
+\item Deveaud2014
+\end{enumerate}
+
+Obliczenia zostały wykonane przy użyciu biblioteki \textit{ldatuning} zaimplementowanej w języku \textit{R}. Następnie, rozpatrzymy klasyfikację dokumentów przy użyciu algorytmu random forest. Klasyfikacji dokonamy w zredukowanej przestrzeni, gdzie każdy dokument jest reprezentowany przez wektor długości $K$. Poszczególne składowe tego wektora są prawdopodobieństwami tematu w dokumencie $\mathcal{P}(Z_k | \vect d)$. 
+
+Następnie, obliczymy najlepszą liczbę tematów $K$ z punktu widzenia klasyfikatora \textit{Random Forest}. W tym celu, obliczymy rozkład a posteriori $\mathcal{P}(\vect z_d|\vect d)$ dla każdego $K=1,\ldots,100$. Każdy z tych rozkładów, definiuje inną przestrzeń zredukowaną. Uruchomimy klasyfikator w każdej z tych przestrzeni i porównamy poziomy błędów. 
+
+
+W pierwszym przykładzie zastosowaniśmy model LDA do danych. W pierwszym kroku stworzyliśmy tabelę TF, w której kolumnami były poszczególne termy. Wyniki zostały przedstawione na rysunkach
+
+\section{Unigrams}
+```{r preprocessUnigrams, echo=FALSE, cache=TRUE}
+cleanedData1 <- prepareCleanedData(imsData, ngramCount = 1)
+```
+
+```{r calculateLdaUnigrams, echo=FALSE, cache=TRUE}
+
+lda1 <- calculateLDA(cleanedData1, k)
+
+#posterior(lda1$topicmodel)[2]
+
+r1 <- trainAndPredict(tree_number, lda1$ldaTrainData, cleanedData1$cleanedTrainLabels, 
+                     lda1$ldaTestData, cleanedData1$cleanedTestLabels)
+
+plotResults(r1$testResult$threshold, r1$testResult$bridgeRatio, r1$testResult$errorRatio)
+
+```
+
+W kolejnym eksperymencie, zastosowaliśmy ten sam model. Użyliśmy jednak innej tabeli TF. Tym razem w kolumnach znalazły się zarówno unigramy jak i bigramy, czyli dwuwyrazowe frazy. 
+
+\section{Bigrams}
+```{r preprocessBigrams, echo=FALSE, cache=TRUE}
+cleanedData2 <- prepareCleanedData(imsData, ngramCount = 2)
+```
+
+```{r calculateLdaBigrams, echo=FALSE, cache=TRUE}
+
+
+lda2 <- calculateLDA(cleanedData2, k)
+
+#posterior(lda1$topicmodel)[2]
+
+r2 <- trainAndPredict(tree_number, lda2$ldaTrainData, cleanedData2$cleanedTrainLabels, 
+                     lda2$ldaTestData, cleanedData2$cleanedTestLabels)
+
+plotResults(r2$testResult$threshold, r2$testResult$bridgeRatio, r2$testResult$errorRatio)
+
+```
+
+Wynik tego eksperymentu pokazuje, że model oparty o unigramy uzyskał lepszą jakość klasyfikacji. Przyczyną tego może być fakt, że użycie bigramów prowadzi do przeuczenia modelu. Aby tego uniknąć należało by wprowadzić jakiś współczynnik wygładzania np
+\begin{eqnarray*}
+\mathcal{P}(w_t|w_{t-1}) = \lambda \frac{N_i}{N} + (1-\lambda)\frac{N_{i|j}}{N_j},
+\end{eqnarray*}
+gdzie $N_i$ oznacza ilość wystąpień słowa $w_i$ w korpusie, a $N_{i|j}$ oznacza ilość wystąpień słowa $w_i$ bezpośrednio po słowie $w_j$.
+
+W literaturze możemy znaleźć następujące rozszerzenia modelu LDA opartego o unigramy.
+\begin{enumerate}
+\item Topic Modeling: Beyond Bag-of-Words autorstwa Hanna M. Wallach
+\item Improvements to the Bayesian Topic N-gram Models autorstwa Hiroshi Noji, Daichi Mochihashi, Yusuke Miyao
+\end{enumerate}
+
+Dalsze pomysły
+\begin{enumerate}
+\item Redukcja wymiarów oparta o kodowanie arytmetyczne
+\item Kodowanie arytmetyczne wykorzystujące rozkłady w tematach i rozkłady tematów
+\item Rozszerzyć modelowanie tematyczne o drugie kryterium optymalizacji - minimalizacja entropii w ramach tematu. Chodzi o to, żeby tematy były jak najbardziej specyficzne.
+\item Przeczytać artykuł https://www.stat.berkeley.edu/~bickel/mldim.pdf. Sprawdzić, czy można ten model zastosować do topic modelling.
+\item Przeczytać artykuł Improving text classification by schrinkage in a Hierarchy  of Classes
+\end{enumerate}
+
+
