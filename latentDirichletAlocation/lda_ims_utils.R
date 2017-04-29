@@ -13,6 +13,7 @@
 
 library("tm")
 library("maxent")
+library("ldatuning")
 
 prepareImsData <- function(trainFile, testFile) {
   ims_train_data <- read.csv(trainFile, sep="\t", quote = "")
@@ -48,12 +49,12 @@ prepareImsData2classes <- function(trainFile, testFile) {
   ims_train_data <- read.csv(trainFile, sep="\t", quote = "")
   class(ims_train_data)
   
-  ims_train_data <- ims_train_data[ims_train_data$ReferenceID == c(3195400046, 3168650095),]
-  #ims_train_data <- ims_train_data[sample(nrow(ims_train_data), 1000),] 
+  ims_train_data <- ims_train_data[ims_train_data$ReferenceID == c(3195400046, 3168650095, 3066109172),]
+  #ims_train_data <- ims_train_data[sample(nrow(ims_train_data), 100),] 
   
   ims_test_data <- read.csv(testFile, sep="\t", quote = "")
-  ims_test_data <- ims_test_data[ims_test_data$ReferenceID == c(3195400046, 3168650095),]
-  #ims_test_data <- ims_test_data[sample(nrow(ims_test_data), 100),] 
+  ims_test_data <- ims_test_data[ims_test_data$ReferenceID == c(3195400046, 3168650095, 3066109172),]
+  #ims_test_data <- ims_test_data[sample(nrow(ims_test_data), 20),] 
   
   dim(ims_train_data)
   dim(ims_test_data)
@@ -123,7 +124,7 @@ trainRandomForest <- function(trainMatrix, trainLabels, ntree){
   list(trainingDuration=duration, model=model)
 }
 
-test <- function(model, testMatrix, test_code, threshold = seq(0,1,by=0.01)) {
+test <- function(model, testMatrix, test_code) {
   
   bridge_for_threshold <- function(threshold){
     
@@ -151,6 +152,8 @@ test <- function(model, testMatrix, test_code, threshold = seq(0,1,by=0.01)) {
   
   out <- predict(model, as.matrix(testMatrix), type="prob")
   column.names <- colnames(out)
+  
+  threshold = seq(0,1,by=0.01)
   
   bridge <- lapply(threshold, bridge_for_threshold)
   bridge_ratio <- lapply(bridge, function(x){x$bridge_ratio})
@@ -187,6 +190,7 @@ plotWordCloud <- function(imsData){
 
 prepareCleanedData <- function(imsData, sparseLevel=.998, ngramCount = 1){
 
+  start.time <- Sys.time()
   train_code <- as.factor(imsData$train$ReferenceID)
   test_code <- as.factor(imsData$test$ReferenceID)
   
@@ -199,18 +203,35 @@ prepareCleanedData <- function(imsData, sparseLevel=.998, ngramCount = 1){
   rowTotals <- apply(rawMatrices$rawTrainMatrix, 1, sum) #Find the sum of words in each Document
   cleanedTrainMatrix   <- rawMatrices$rawTrainMatrix[rowTotals> 0, ]
   cleanedTrainLabels <- train_code[rowTotals> 0]
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  duration <- time.taken
   
   list(cleanedTrainMatrix=cleanedTrainMatrix, cleanedTrainLabels=cleanedTrainLabels,
-       cleanedTestMatrix=cleanedTestMatrix, cleanedTestLabels=cleanedTestLabels)
+       cleanedTestMatrix=cleanedTestMatrix, cleanedTestLabels=cleanedTestLabels, duration=duration)
 }
 
 calculateLDA <- function(cleanedData, topic_number){
   
-  topicmodel <- LDA(cleanedData$cleanedTrainMatrix, k=topic_number, control=list(seed=SEED))
+  start.time <- Sys.time()
+  topicmodel <- LDA(cleanedData$cleanedTrainMatrix, k=topic_number, method="Gibbs", control=list(seed=SEED))
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  duration <- time.taken
+  
   trainData <- posterior(topicmodel)[2]$topics
   testData <- posterior(topicmodel, cleanedData$cleanedTestMatrix)[2]$topics
   
-  list(topicmodel=topicmodel, ldaTrainData=trainData, ldaTestData=testData)
+  list(topicmodel=topicmodel, ldaTrainData=trainData, ldaTestData=testData, duration=duration)
+}
+
+testLda <- function(k, cleandData){
+  printf("Calculating lda fot %d topics\n",k)
+  lda <- calculateLDA(cleanedData, k)
+  printf("Training lda took  %f seconds\n",lda$duration)
+  error <- trainAndPredictSimple(tree_number, lda$ldaTrainData, cleanedData$cleanedTrainLabels, 
+                                 lda$ldaTestData, cleanedData$cleanedTestLabels)
+  list(error=error, topicCount=k, duration=lda$duration)
 }
 
 trainAndPredict <- function(tree_number, trainData, trainLabels, testData, testLabels){
@@ -223,6 +244,45 @@ trainAndPredict <- function(tree_number, trainData, trainLabels, testData, testL
   testResult <- test(model, testData, testLabels)
   list(model=model, testResult=testResult, duration=duration)
 }
+
+trainAndPredictSimple <- function(tree_number, trainData, trainLabels, testData, testLabels){
+  start.time <- Sys.time()
+  model <- randomForest(x=as.matrix(trainData), y=trainLabels, ntree=tree_number, keep.forest=TRUE)
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  duration <- time.taken
+  
+  out <- predict(model, as.matrix(testData))
+  test.result <- out[out != testLabels]
+  errorRate <- length(test.result)/length(testLabels)
+  errorRate
+}
+
+estimateTopicsCount <- function(from,to,step, cleanedData){
+  
+  start.time <- Sys.time()
+  topicCounts <- seq(from,to,step)
+  
+  results <- lapply(topicCounts, testLda)
+  errors <- lapply(results, function(x){x$error})
+  
+  result <- FindTopicsNumber(
+    cleanedData$cleanedTrainMatrix,
+    topics = seq(from = from, to = to, by = step),
+    metrics = c("Griffiths2004", "CaoJuan2009", "Arun2010", "Deveaud2014"),
+    method = "Gibbs",
+    control = list(seed = 77),
+    mc.cores = 4L,
+    verbose = TRUE
+  )
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  duration <- time.taken
+  
+  list(ldatuningResults=result, rfResult=errors, duration=duration)
+}
+
+printf <- function(...) cat(sprintf(...), sep='\n', file=stderr())
 
 create_matrix <- function (textColumns, language = "english", minDocFreq = 1, 
                              maxDocFreq = Inf, minWordLength = 3, maxWordLength = Inf, 

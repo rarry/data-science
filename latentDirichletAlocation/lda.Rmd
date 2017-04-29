@@ -98,6 +98,7 @@ lda2 <- calculateLDA(cleanedData2, k)
 r2 <- trainAndPredict(tree_number, lda2$ldaTrainData, cleanedData2$cleanedTrainLabels, 
                      lda2$ldaTestData, cleanedData2$cleanedTestLabels)
 
+par(new=TRUE)
 plotResults(r2$testResult$threshold, r2$testResult$bridgeRatio, r2$testResult$errorRatio)
 
 ```
